@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Insta Lite
 // @namespace    insta-lite
-// @version      0.4.0
+// @version      0.4.1
 // @description  Strip Instagram down: no Reels, Explore, ads, or suggested posts.
 // @match        https://www.instagram.com/*
 // @run-at       document-start
@@ -83,8 +83,10 @@
 
   function hideNavLinks() {
     if (!CONFIG.hideReels) return;
-    for (const a of document.querySelectorAll(`a[href="/reels/"]:not([${MARK}])`)) {
-      hide(navWrapper(a), 'nav-reels');
+    // Match on the path alone: Instagram carries query params like ?hl=en into
+    // nav hrefs, giving /reels/?hl=en.
+    for (const a of document.querySelectorAll(`a[href^="/reels/"]:not([${MARK}])`)) {
+      if (new URL(a.href).pathname === '/reels/') hide(navWrapper(a), 'nav-reels');
     }
   }
 
