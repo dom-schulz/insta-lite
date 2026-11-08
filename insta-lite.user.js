@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Insta Lite
 // @namespace    insta-lite
-// @version      0.5.0
+// @version      0.5.1
 // @description  Strip Instagram down: no Reels, Explore, ads, or suggested posts.
 // @match        https://www.instagram.com/*
 // @run-at       document-start
@@ -24,6 +24,7 @@
 
   const MARK = 'data-insta-lite';
   const LOCK = 'data-insta-lite-lock';
+  const FEED = 'data-insta-lite-feed';
 
   // Instagram's class names are obfuscated and change constantly, so everything
   // here keys off hrefs and visible text, which are far more stable.
@@ -46,7 +47,12 @@
   // with no box stall it, leaving a page of blank padding and no new posts.
   function injectStyle() {
     const style = document.createElement('style');
-    style.textContent = `[${LOCK}] { overflow: hidden !important; overscroll-behavior: none !important; }\n` + (CONFIG.debug
+    // Chrome's scroll anchoring compensates when the feed drops a post off the
+    // top, but not when the feed adds that height back as padding, so with the
+    // collapsed posts the page keeps jumping back up. Turn it off on the home
+    // feed only; DM chats rely on it to hold position as older messages load.
+    style.textContent = `[${LOCK}] { overflow: hidden !important; overscroll-behavior: none !important; }
+      html[${FEED}], html[${FEED}] body, html[${FEED}] body * { overflow-anchor: none !important; }\n` + (CONFIG.debug
       ? `[${MARK}] { outline: 3px solid red !important; outline-offset: -3px; }`
       : `[${MARK}] { display: none !important; }
          article[${MARK}] {
@@ -157,6 +163,7 @@
   }
 
   function scan() {
+    document.documentElement.toggleAttribute(FEED, location.pathname === '/');
     redirectBlockedPaths();
     hideNavLinks();
     hideExploreGrid();
