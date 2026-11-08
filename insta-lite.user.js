@@ -1,0 +1,148 @@
+// ==UserScript==
+// @name         Insta Lite
+// @namespace    insta-lite
+// @version      0.3.0
+// @description  Strip Instagram down: no Reels, Explore, ads, or suggested posts.
+// @match        https://www.instagram.com/*
+// @run-at       document-start
+// @grant        none
+// @downloadURL  https://raw.githubusercontent.com/dom-schulz/insta-lite/main/insta-lite.user.js
+// @updateURL    https://raw.githubusercontent.com/dom-schulz/insta-lite/main/insta-lite.user.js
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  const CONFIG = {
+    hideReels: true,       // Reels tab + /reels/ feed (single reels sent to you still open)
+    hideExplore: true,     // Explore grid (the search bar above it still works)
+    hideSponsored: true,   // ads in the feed
+    hideSuggested: true,   // "Suggested for you" posts and blocks
+    hideFeedReels: false,  // reels that show up as normal posts in the home feed
+    debug: false,          // outline matches in red instead of hiding them
+  };
+
+  const MARK = 'data-insta-lite';
+
+  // Instagram's class names are obfuscated and change constantly, so everything
+  // here keys off hrefs and visible text, which are far more stable.
+
+  // The Search button links to /explore/, so Explore can't be removed from the
+  // nav. Instead, the bare /explore/ grid is swapped for the search page.
+  // Subpaths like /explore/tags/ and /explore/locations/ still work.
+  const REDIRECTS = [];
+  if (CONFIG.hideReels) REDIRECTS.push([/^\/reels\/?$/, '/']);
+  if (CONFIG.hideExplore) REDIRECTS.push([/^\/explore\/?$/, '/explore/search/']);
+
+  const SPONSORED_LABELS = ['Sponsored', 'Ad', 'Paid partnership'];
+  const SUGGESTED_LABELS = ['Suggested for you', 'Suggested posts', 'Suggested reels'];
+
+  // Feed posts are collapsed to 1px rather than display:none. The feed only
+  // renders posts near the viewport and tracks which ones are on screen; posts
+  // with no box stall it, leaving a page of blank padding and no new posts.
+  function injectStyle() {
+    const style = document.createElement('style');
+    style.textContent = CONFIG.debug
+      ? `[${MARK}] { outline: 3px solid red !important; outline-offset: -3px; }`
+      : `[${MARK}] { display: none !important; }
+         article[${MARK}] {
+           display: block !important; height: 1px !important; min-height: 0 !important;
+           overflow: hidden !important; visibility: hidden !important;
+           margin: 0 !important; padding: 0 !important; border: 0 !important;
+         }`;
+    document.documentElement.appendChild(style);
+  }
+
+  function hide(el, reason) {
+    if (!el || el.hasAttribute(MARK)) return;
+    el.setAttribute(MARK, reason);
+    if (CONFIG.debug) console.log('[insta-lite] hid', reason, el);
+  }
+
+  function redirectBlockedPaths() {
+    for (const [re, to] of REDIRECTS) {
+      if (re.test(location.pathname)) return location.replace(to);
+    }
+  }
+
+  // Nav links sit inside a few single-child wrapper divs; hide the outermost
+  // wrapper so the icon doesn't leave an empty gap behind.
+  function navWrapper(a) {
+    let el = a;
+    for (let i = 0; i < 5; i++) {
+      const parent = el.parentElement;
+      if (!parent || parent.tagName === 'NAV' || parent.children.length !== 1) break;
+      el = parent;
+    }
+    return el;
+  }
+
+  function hideNavLinks() {
+    if (!CONFIG.hideReels) return;
+    for (const a of document.querySelectorAll(`a[href="/reels/"]:not([${MARK}])`)) {
+      hide(navWrapper(a), 'nav-reels');
+    }
+  }
+
+  // The search page shows the Explore grid under the search bar. Walk up from
+  // the search input to the first ancestor that also holds posts, then hide
+  // the branches with posts. Typed results render in a separate overlay.
+  const POST_LINKS = 'a[href*="/p/"], a[href*="/reel"]';
+  function hideExploreGrid() {
+    if (!CONFIG.hideExplore || !/^\/explore\/(search\/)?$/.test(location.pathname)) return;
+    const input = document.querySelector('input[aria-label="Search input"], input[placeholder="Search"]');
+    let container = input && input.parentElement;
+    while (container && !container.querySelector(POST_LINKS)) container = container.parentElement;
+    if (!container) return;
+    for (const child of container.children) {
+      if (!child.contains(input) && child.querySelector(POST_LINKS)) hide(child, 'explore-grid');
+    }
+  }
+
+  // True if any leaf element under root has exactly one of the given labels.
+  function hasLabel(root, labels) {
+    for (const el of root.querySelectorAll('span, a, div')) {
+      if (el.childElementCount === 0 && labels.includes(el.textContent.trim())) return true;
+    }
+    return false;
+  }
+
+  function hideFeedPosts() {
+    for (const article of document.querySelectorAll(`article:not([${MARK}])`)) {
+      if (CONFIG.hideSponsored && hasLabel(article, SPONSORED_LABELS)) {
+        hide(article, 'sponsored');
+      } else if (CONFIG.hideSuggested && hasLabel(article, SUGGESTED_LABELS)) {
+        hide(article, 'suggested');
+      } else if (CONFIG.hideFeedReels && article.querySelector('a[href*="/reel/"]')) {
+        hide(article, 'feed-reel');
+      }
+    }
+  }
+
+  function scan() {
+    redirectBlockedPaths();
+    hideNavLinks();
+    hideExploreGrid();
+    hideFeedPosts();
+  }
+
+  // Instagram is a single-page app that keeps rewriting the DOM, so rescan on
+  // every change, batched to at most once per frame.
+  let queued = false;
+  function queueScan() {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      scan();
+    });
+  }
+
+  redirectBlockedPaths();
+  injectStyle();
+  new MutationObserver(queueScan).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+  window.addEventListener('popstate', queueScan);
+})();
