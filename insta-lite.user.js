@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Insta Lite
 // @namespace    insta-lite
-// @version      0.4.1
+// @version      0.4.2
 // @description  Strip Instagram down: no Reels, Explore, ads, or suggested posts.
 // @match        https://www.instagram.com/*
 // @run-at       document-start
@@ -15,7 +15,6 @@
 
   const CONFIG = {
     hideReels: true,       // Reels tab + /reels/ feed (single reels sent to you still open)
-    hideExplore: true,     // Explore grid (the search bar above it still works)
     hideSponsored: true,   // ads in the feed
     hideSuggested: true,   // "Suggested for you" posts and blocks
     hideFeedReels: false,  // reels that show up as normal posts in the home feed
@@ -33,7 +32,7 @@
   // Subpaths like /explore/tags/ and /explore/locations/ still work.
   const REDIRECTS = [];
   if (CONFIG.hideReels) REDIRECTS.push([/^\/reels\/?$/, '/']);
-  if (CONFIG.hideExplore) REDIRECTS.push([/^\/explore\/?$/, '/explore/search/']);
+  REDIRECTS.push([/^\/explore\/?$/, '/explore/search/']);
   // The reel viewer lets you swipe into an endless reels feed; the post page
   // for the same shortcode plays just that one reel.
   if (CONFIG.lockReels) REDIRECTS.push([/^\/(?:[\w.]+\/)?reels?\/([\w-]+)\/?$/, '/p/$1/']);
@@ -95,7 +94,7 @@
   // the branches with posts. Typed results render in a separate overlay.
   const POST_LINKS = 'a[href*="/p/"], a[href*="/reel"]';
   function hideExploreGrid() {
-    if (!CONFIG.hideExplore || !/^\/explore\/(search\/)?$/.test(location.pathname)) return;
+    if (!/^\/explore\/(search\/)?$/.test(location.pathname)) return;
     const input = document.querySelector('input[aria-label="Search input"], input[placeholder="Search"]');
     let container = input && input.parentElement;
     while (container && !container.querySelector(POST_LINKS)) container = container.parentElement;

@@ -6,13 +6,15 @@ instagram.com, the same way an ad blocker does.
 
 ## What it does
 
-All of these are toggles in the `CONFIG` block at the top of
+The Explore grid is always hidden. The Search button stays and opens just the
+search bar, since Instagram's Search lives on the Explore page.
+
+Everything else is a toggle in the `CONFIG` block at the top of
 `insta-lite.user.js`.
 
 | Option | Default | Effect |
 |---|---|---|
 | `hideReels` | on | Hides the Reels tab and sends the `/reels/` feed back home |
-| `hideExplore` | on | Hides the Explore grid; the Search button and search bar still work |
 | `hideSponsored` | on | Hides ads in the feed |
 | `hideSuggested` | on | Hides "Suggested for you" posts |
 | `hideFeedReels` | off | Also hides reels from accounts you follow |
