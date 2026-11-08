@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Insta Lite
 // @namespace    insta-lite
-// @version      0.3.0
+// @version      0.4.0
 // @description  Strip Instagram down: no Reels, Explore, ads, or suggested posts.
 // @match        https://www.instagram.com/*
 // @run-at       document-start
@@ -19,6 +19,7 @@
     hideSponsored: true,   // ads in the feed
     hideSuggested: true,   // "Suggested for you" posts and blocks
     hideFeedReels: false,  // reels that show up as normal posts in the home feed
+    lockReels: true,       // open single reels (e.g. from DMs) as a post, no swiping to more
     debug: false,          // outline matches in red instead of hiding them
   };
 
@@ -33,6 +34,9 @@
   const REDIRECTS = [];
   if (CONFIG.hideReels) REDIRECTS.push([/^\/reels\/?$/, '/']);
   if (CONFIG.hideExplore) REDIRECTS.push([/^\/explore\/?$/, '/explore/search/']);
+  // The reel viewer lets you swipe into an endless reels feed; the post page
+  // for the same shortcode plays just that one reel.
+  if (CONFIG.lockReels) REDIRECTS.push([/^\/(?:[\w.]+\/)?reels?\/([\w-]+)\/?$/, '/p/$1/']);
 
   const SPONSORED_LABELS = ['Sponsored', 'Ad', 'Paid partnership'];
   const SUGGESTED_LABELS = ['Suggested for you', 'Suggested posts', 'Suggested reels'];
@@ -61,7 +65,7 @@
 
   function redirectBlockedPaths() {
     for (const [re, to] of REDIRECTS) {
-      if (re.test(location.pathname)) return location.replace(to);
+      if (re.test(location.pathname)) return location.replace(location.pathname.replace(re, to));
     }
   }
 
@@ -99,6 +103,18 @@
     }
   }
 
+  // Post pages end with a "More posts from <user>" grid. Walk up from that
+  // label to the largest ancestor that doesn't also hold the post's own video.
+  function hideMorePosts() {
+    if (!CONFIG.lockReels || !/^\/p\//.test(location.pathname)) return;
+    const label = [...document.querySelectorAll(`div:not([${MARK}]), span, h2`)].find(el =>
+      [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim() === 'More posts from'));
+    if (!label) return;
+    let el = label;
+    while (el.parentElement && !el.parentElement.querySelector('video')) el = el.parentElement;
+    if (el.querySelector(POST_LINKS)) hide(el, 'more-posts');
+  }
+
   // True if any leaf element under root has exactly one of the given labels.
   function hasLabel(root, labels) {
     for (const el of root.querySelectorAll('span, a, div')) {
@@ -123,6 +139,7 @@
     redirectBlockedPaths();
     hideNavLinks();
     hideExploreGrid();
+    hideMorePosts();
     hideFeedPosts();
   }
 
