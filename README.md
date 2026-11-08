@@ -21,8 +21,10 @@ Everything else is a toggle in the `CONFIG` block at the top of
 | `lockReels` | on | Shows only the reel you opened (e.g. from a DM), with no swiping into more reels |
 | `debug` | off | Outlines what would be hidden in red instead of hiding it |
 
-Ad and suggested-post detection matches on English labels, so Instagram needs
-to be set to English.
+Ads and suggested posts are removed from the feed data as it loads, before
+Instagram draws them, so the feed scrolls normally. Anything that slips past
+that is hidden on the page by matching English labels, so Instagram needs to be
+set to English.
 
 ## Install on iPhone
 

@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Insta Lite
 // @namespace    insta-lite
-// @version      0.5.1
+// @version      0.6.0
 // @description  Strip Instagram down: no Reels, Explore, ads, or suggested posts.
 // @match        https://www.instagram.com/*
 // @run-at       document-start
 // @grant        none
+// @inject-into  auto
 // @downloadURL  https://raw.githubusercontent.com/dom-schulz/insta-lite/main/insta-lite.user.js
 // @updateURL    https://raw.githubusercontent.com/dom-schulz/insta-lite/main/insta-lite.user.js
 // ==/UserScript==
@@ -42,9 +43,73 @@
   const SPONSORED_LABELS = ['Sponsored', 'Ad', 'Paid partnership'];
   const SUGGESTED_LABELS = ['Suggested for you', 'Suggested posts', 'Suggested reels'];
 
-  // Feed posts are collapsed to 1px rather than display:none. The feed only
-  // renders posts near the viewport and tracks which ones are on screen; posts
-  // with no box stall it, leaving a page of blank padding and no new posts.
+  // Ads and suggested posts are dropped from the feed data before Instagram
+  // sees it, so they never take up space in the feed. Hiding them after they
+  // render leaves the feed's height estimates wrong, which shows up as blank
+  // screens and the page shrinking under you when scrolling fast. Each feed
+  // item has exactly one of media (followed accounts), explore_story
+  // (suggested) or ad set.
+  const FEED_KEY = 'xdt_api__v1__feed__timeline__connection';
+  function keepFeedItem(node) {
+    if (!node) return true;
+    if (CONFIG.hideSponsored && node.ad) return false;
+    if (CONFIG.hideSuggested && node.explore_story) return false;
+    if (CONFIG.hideFeedReels && node.media && node.media.product_type === 'clips') return false;
+    return true;
+  }
+
+  // Responses can hold several JSON payloads, one per line.
+  function filterFeedResponse(text) {
+    if (!text.includes(FEED_KEY)) return text;
+    return text.split('\n').map(line => {
+      let json;
+      try { json = JSON.parse(line); } catch (e) { return line; }
+      const feed = json && json.data && json.data[FEED_KEY];
+      if (!feed || !Array.isArray(feed.edges)) return line;
+      const before = feed.edges.length;
+      feed.edges = feed.edges.filter(edge => keepFeedItem(edge.node));
+      if (CONFIG.debug) console.log('[insta-lite] dropped', before - feed.edges.length, 'feed items');
+      return JSON.stringify(json);
+    }).join('\n');
+  }
+
+  // The feed loads over XHR. Filter what Instagram reads from finished
+  // GraphQL requests, caching per request since it reads the response more
+  // than once.
+  function filterFeedRequests() {
+    const proto = XMLHttpRequest.prototype;
+    const open = proto.open;
+    const responseText = Object.getOwnPropertyDescriptor(proto, 'responseText');
+    const response = Object.getOwnPropertyDescriptor(proto, 'response');
+    if (!responseText || !response) return;
+
+    proto.open = function (method, url, ...rest) {
+      this.instaLiteGraphql = /\/graphql\/query|\/api\/graphql/.test(String(url));
+      return open.call(this, method, url, ...rest);
+    };
+    function filtered(xhr, raw) {
+      if (!xhr.instaLiteGraphql || xhr.readyState !== 4 || typeof raw !== 'string') return raw;
+      if (xhr.instaLiteRaw !== raw) {
+        xhr.instaLiteRaw = raw;
+        try { xhr.instaLiteFiltered = filterFeedResponse(raw); } catch (e) { xhr.instaLiteFiltered = raw; }
+      }
+      return xhr.instaLiteFiltered;
+    }
+    Object.defineProperty(proto, 'responseText', {
+      configurable: true,
+      get() { return filtered(this, responseText.get.call(this)); },
+    });
+    Object.defineProperty(proto, 'response', {
+      configurable: true,
+      get() { return filtered(this, response.get.call(this)); },
+    });
+  }
+
+  // Anything the data filter misses (the first page of the feed, paid
+  // partnerships) is hidden on the page instead. Feed posts are collapsed to
+  // 1px rather than display:none. The feed only renders posts near the
+  // viewport and tracks which ones are on screen; posts with no box stall it,
+  // leaving a page of blank padding and no new posts.
   function injectStyle() {
     const style = document.createElement('style');
     // Chrome's scroll anchoring compensates when the feed drops a post off the
@@ -185,6 +250,7 @@
   }
 
   redirectBlockedPaths();
+  filterFeedRequests();
   injectStyle();
   new MutationObserver(queueScan).observe(document.documentElement, {
     childList: true,
