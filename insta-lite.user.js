@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Insta Lite
 // @namespace    insta-lite
-// @version      0.4.2
+// @version      0.5.0
 // @description  Strip Instagram down: no Reels, Explore, ads, or suggested posts.
 // @match        https://www.instagram.com/*
 // @run-at       document-start
@@ -23,6 +23,7 @@
   };
 
   const MARK = 'data-insta-lite';
+  const LOCK = 'data-insta-lite-lock';
 
   // Instagram's class names are obfuscated and change constantly, so everything
   // here keys off hrefs and visible text, which are far more stable.
@@ -45,14 +46,14 @@
   // with no box stall it, leaving a page of blank padding and no new posts.
   function injectStyle() {
     const style = document.createElement('style');
-    style.textContent = CONFIG.debug
+    style.textContent = `[${LOCK}] { overflow: hidden !important; overscroll-behavior: none !important; }\n` + (CONFIG.debug
       ? `[${MARK}] { outline: 3px solid red !important; outline-offset: -3px; }`
       : `[${MARK}] { display: none !important; }
          article[${MARK}] {
            display: block !important; height: 1px !important; min-height: 0 !important;
            overflow: hidden !important; visibility: hidden !important;
            margin: 0 !important; padding: 0 !important; border: 0 !important;
-         }`;
+         }`);
     document.documentElement.appendChild(style);
   }
 
@@ -116,6 +117,25 @@
     if (el.querySelector(POST_LINKS)) hide(el, 'more-posts');
   }
 
+  // On phones, a reel tapped in a DM opens in a full-screen viewer inside the
+  // chat (the URL stays /direct/t/...), so the redirect above never fires. The
+  // viewer is a vertical scroll-snap container with the tapped reel first and
+  // more reels below it: lock it, and snap back if anything scrolls it.
+  function lockReelScrollers() {
+    if (!CONFIG.lockReels) return;
+    for (const video of document.querySelectorAll('video')) {
+      if (video.closest(`[${LOCK}]`)) continue;
+      for (let el = video.parentElement; el && el !== document.body; el = el.parentElement) {
+        if (!getComputedStyle(el).scrollSnapType.startsWith('y')) continue;
+        el.setAttribute(LOCK, '');
+        el.scrollTop = 0;
+        el.addEventListener('scroll', () => { if (el.scrollTop !== 0) el.scrollTop = 0; });
+        if (CONFIG.debug) console.log('[insta-lite] locked reel scroller', el);
+        break;
+      }
+    }
+  }
+
   // True if any leaf element under root has exactly one of the given labels.
   function hasLabel(root, labels) {
     for (const el of root.querySelectorAll('span, a, div')) {
@@ -141,6 +161,7 @@
     hideNavLinks();
     hideExploreGrid();
     hideMorePosts();
+    lockReelScrollers();
     hideFeedPosts();
   }
 

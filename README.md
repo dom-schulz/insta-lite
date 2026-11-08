@@ -18,7 +18,7 @@ Everything else is a toggle in the `CONFIG` block at the top of
 | `hideSponsored` | on | Hides ads in the feed |
 | `hideSuggested` | on | Hides "Suggested for you" posts |
 | `hideFeedReels` | off | Also hides reels from accounts you follow |
-| `lockReels` | on | Opens single reels (e.g. from DMs) as a post, with no swiping into more reels |
+| `lockReels` | on | Shows only the reel you opened (e.g. from a DM), with no swiping into more reels |
 | `debug` | off | Outlines what would be hidden in red instead of hiding it |
 
 Ad and suggested-post detection matches on English labels, so Instagram needs
