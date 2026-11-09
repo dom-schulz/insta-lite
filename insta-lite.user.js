@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Insta Lite
 // @namespace    insta-lite
-// @version      0.6.2
+// @version      0.7.0
 // @description  Strip Instagram down: no Reels, Explore, ads, or suggested posts.
 // @match        https://www.instagram.com/*
 // @run-at       document-start
@@ -21,16 +21,27 @@
     hideFeedReels: false,  // reels that show up as normal posts in the home feed
     lockReels: true,       // open single reels (e.g. from DMs) as a post, no swiping to more
     debug: false,          // outline matches in red instead of hiding them
-    showStats: true,       // badge on the home feed for diagnosing scroll jumps (temporary)
+    showStats: true,       // badge with test toggles for diagnosing feed glitches (temporary)
   };
 
   const MARK = 'data-insta-lite';
   const LOCK = 'data-insta-lite-lock';
   const FEED = 'data-insta-lite-feed';
-  const STATS = {
-    feedResponses: 0, dropped: 0, hidPosts: 0, lastHide: 0,
-    shifts: 0, lastShift: 0, jumps: 0, lastJump: 0, jumpsAfterHide: 0, shrinks: 0, scrolls: 0,
-  };
+  const STATS = { hidPosts: 0 };
+
+  // Parts of the script that can be switched off from the stats badge, to find
+  // which one makes the phone feed glitch. Saved in localStorage.
+  const PARTS = [
+    'filter',  // drop ads and suggested posts from the feed data
+    'hide',    // hide posts on the page
+    'anchor',  // scroll anchoring off on the feed
+    'lock',    // DM reel lock
+    'scan',    // rescan on page changes (everything on-page)
+  ];
+  const OFF_KEY = 'insta-lite-off';
+  let off = new Set();
+  try { off = new Set((localStorage.getItem(OFF_KEY) || '').split(',').filter(Boolean)); } catch (e) {}
+  const on = part => !CONFIG.showStats || !off.has(part);
 
   // Instagram's class names are obfuscated and change constantly, so everything
   // here keys off hrefs and visible text, which are far more stable.
@@ -51,39 +62,47 @@
   // Ads and suggested posts are dropped from the feed data before Instagram
   // sees it, so they never take up space in the feed. Hiding them after they
   // render leaves the feed's height estimates wrong, which shows up as blank
-  // screens and the page shrinking under you when scrolling fast. Each feed
-  // item has exactly one of media (followed accounts), explore_story
-  // (suggested) or ad set.
-  const FEED_KEY = 'xdt_api__v1__feed__timeline__connection';
-  function keepFeedItem(node) {
-    if (!node) return true;
-    if (CONFIG.hideSponsored && node.ad) return false;
-    if (CONFIG.hideSuggested && node.explore_story) return false;
-    if (CONFIG.hideFeedReels && node.media && node.media.product_type === 'clips') return false;
-    return true;
-  }
+  // screens and the page jumping around while scrolling. Each feed item has
+  // exactly one of media (followed accounts), explore_story (suggested) or ad
+  // set.
+  //
+  // The feed loads over XHR, so this patches what Instagram reads from
+  // finished GraphQL requests, caching per request since it reads the
+  // response more than once. It has to run in Instagram's own JavaScript, so
+  // it's self-contained: it also gets injected into the page as source, and
+  // reports its counts through attributes on <html>.
+  function installFeedFilter(settings) {
+    if (window.instaLiteFeedFilter) return;
+    window.instaLiteFeedFilter = true;
+    const FEED_KEY = 'xdt_api__v1__feed__timeline__connection';
+    const root = document.documentElement;
+    const count = (name, n) => { root.dataset[name] = (Number(root.dataset[name]) || 0) + n; };
 
-  // Responses can hold several JSON payloads, one per line.
-  function filterFeedResponse(text) {
-    if (!text.includes(FEED_KEY)) return text;
-    return text.split('\n').map(line => {
-      let json;
-      try { json = JSON.parse(line); } catch (e) { return line; }
-      const feed = json && json.data && json.data[FEED_KEY];
-      if (!feed || !Array.isArray(feed.edges)) return line;
-      const before = feed.edges.length;
-      feed.edges = feed.edges.filter(edge => keepFeedItem(edge.node));
-      STATS.feedResponses++;
-      STATS.dropped += before - feed.edges.length;
-      if (CONFIG.debug) console.log('[insta-lite] dropped', before - feed.edges.length, 'feed items');
-      return JSON.stringify(json);
-    }).join('\n');
-  }
+    function keepFeedItem(node) {
+      if (!node) return true;
+      if (settings.hideSponsored && node.ad) return false;
+      if (settings.hideSuggested && node.explore_story) return false;
+      if (settings.hideFeedReels && node.media && node.media.product_type === 'clips') return false;
+      return true;
+    }
 
-  // The feed loads over XHR. Filter what Instagram reads from finished
-  // GraphQL requests, caching per request since it reads the response more
-  // than once.
-  function filterFeedRequests() {
+    // Responses can hold several JSON payloads, one per line.
+    function filterFeedResponse(text) {
+      if (!text.includes(FEED_KEY)) return text;
+      return text.split('\n').map(line => {
+        let json;
+        try { json = JSON.parse(line); } catch (e) { return line; }
+        const feed = json && json.data && json.data[FEED_KEY];
+        if (!feed || !Array.isArray(feed.edges)) return line;
+        const before = feed.edges.length;
+        feed.edges = feed.edges.filter(edge => keepFeedItem(edge.node));
+        count('instaLitePages', 1);
+        count('instaLiteDropped', before - feed.edges.length);
+        if (settings.debug) console.log('[insta-lite] dropped', before - feed.edges.length, 'feed items');
+        return JSON.stringify(json);
+      }).join('\n');
+    }
+
     const proto = XMLHttpRequest.prototype;
     const open = proto.open;
     const responseText = Object.getOwnPropertyDescriptor(proto, 'responseText');
@@ -112,6 +131,42 @@
     });
   }
 
+  // Tampermonkey runs userscripts inside the page, where installing the filter
+  // directly works. Safari's Userscripts app runs them in a separate world
+  // whose XHR isn't Instagram's, and Instagram's CSP blocks plain injected
+  // scripts. A script carrying the nonce from Instagram's own script tags is
+  // allowed, so inject one of those too; if the filter is already installed
+  // in the page, it does nothing.
+  function filterFeedRequests() {
+    const settings = {
+      hideSponsored: CONFIG.hideSponsored,
+      hideSuggested: CONFIG.hideSuggested,
+      hideFeedReels: CONFIG.hideFeedReels,
+      debug: CONFIG.debug,
+    };
+    installFeedFilter(settings);
+
+    const inject = nonce => {
+      const script = document.createElement('script');
+      script.nonce = nonce;
+      script.textContent = `(${installFeedFilter})(${JSON.stringify(settings)});`;
+      (document.head || document.documentElement).appendChild(script);
+      script.remove();
+    };
+    const findNonce = () => {
+      const script = [...document.scripts].find(s => s.nonce);
+      return script && script.nonce;
+    };
+    if (findNonce()) return inject(findNonce());
+    const observer = new MutationObserver(() => {
+      const nonce = findNonce();
+      if (!nonce) return;
+      observer.disconnect();
+      inject(nonce);
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+  }
+
   // Anything the data filter misses (the first page of the feed, paid
   // partnerships) is hidden on the page instead. Feed posts are collapsed to
   // 1px rather than display:none. The feed only renders posts near the
@@ -124,7 +179,7 @@
     // collapsed posts the page keeps jumping back up. Turn it off on the home
     // feed only; DM chats rely on it to hold position as older messages load.
     style.textContent = `[${LOCK}] { overflow: hidden !important; overscroll-behavior: none !important; }
-      html[${FEED}], html[${FEED}] body, html[${FEED}] body * { overflow-anchor: none !important; }\n` + (CONFIG.debug
+      ${on('anchor') ? `html[${FEED}], html[${FEED}] body, html[${FEED}] body * { overflow-anchor: none !important; }` : ''}\n` + (CONFIG.debug
       ? `[${MARK}] { outline: 3px solid red !important; outline-offset: -3px; }`
       : `[${MARK}] { display: none !important; }
          article[${MARK}] {
@@ -138,10 +193,7 @@
   function hide(el, reason) {
     if (!el || el.hasAttribute(MARK)) return;
     el.setAttribute(MARK, reason);
-    if (el.tagName === 'ARTICLE') {
-      STATS.hidPosts++;
-      STATS.lastHide = performance.now();
-    }
+    if (el.tagName === 'ARTICLE') STATS.hidPosts++;
     if (CONFIG.debug) console.log('[insta-lite] hid', reason, el);
   }
 
@@ -239,58 +291,38 @@
   }
 
   // Shows whether the feed data filter is running (it needs to run inside
-  // Instagram's own page) and counts what could make the feed jump:
-  //   shifts: the post you're looking at moved because something above it
-  //     changed size
-  //   jumps: the scroll position reversed direction by a big step, and how
-  //     many of those came within half a second of the script hiding a post
-  //   shrinks: the page got shorter by more than 100px
-  //   scrolls: page scroll events; stuck at 0 means the feed scrolls inside
-  //     some other element and the counters above can't see it
+  // Instagram's own page) and how many posts were hidden on the page, with a
+  // button per part of the script to switch it off and reload.
   function showStats() {
-    let badge, anchor, anchorTop, lastY = 0, lastDelta = 0, lastHeight = 0;
-    window.addEventListener('scroll', () => {
-      STATS.scrolls++;
-      const delta = scrollY - lastY;
-      if (Math.abs(delta) > 150 && Math.sign(delta) === -Math.sign(lastDelta)) {
-        STATS.jumps++;
-        STATS.lastJump = Math.round(delta);
-        if (performance.now() - STATS.lastHide < 500) STATS.jumpsAfterHide++;
-      }
-      if (delta) lastDelta = delta;
-      lastY = scrollY;
-      const height = document.documentElement.scrollHeight;
-      if (height < lastHeight - 100) STATS.shrinks++;
-      lastHeight = height;
-
-      const mid = innerHeight / 2;
-      const post = [...document.querySelectorAll(`article:not([${MARK}])`)].find(a => {
-        const r = a.getBoundingClientRect();
-        return r.top <= mid && r.bottom >= mid;
-      });
-      const top = post && post.getBoundingClientRect().top + scrollY;
-      if (post && post === anchor && Math.abs(top - anchorTop) > 50) {
-        STATS.shifts++;
-        STATS.lastShift = Math.round(top - anchorTop);
-      }
-      anchor = post;
-      anchorTop = top;
-    }, { passive: true });
+    let badge, text;
     setInterval(() => {
       if (!document.body) return;
       if (!badge) {
         badge = document.createElement('div');
-        badge.style.cssText = 'position:fixed;top:env(safe-area-inset-top);left:0;z-index:2147483647;' +
-          'pointer-events:none;background:rgba(0,0,0,.75);color:#fff;font:11px/1.3 monospace;padding:3px 5px;';
+        badge.style.cssText = 'position:fixed;top:env(safe-area-inset-top);left:0;right:0;z-index:2147483647;' +
+          'background:rgba(0,0,0,.8);color:#fff;font:11px/1.4 monospace;padding:3px 5px;';
+        text = document.createElement('div');
+        badge.appendChild(text);
+        for (const part of PARTS) {
+          const button = document.createElement('button');
+          button.textContent = part;
+          button.style.cssText = 'margin:2px 4px 0 0;padding:3px 8px;font:inherit;border:0;border-radius:3px;' +
+            `color:#fff;background:${off.has(part) ? '#c00' : '#2a2'}`;
+          button.addEventListener('click', () => {
+            off.has(part) ? off.delete(part) : off.add(part);
+            try { localStorage.setItem(OFF_KEY, [...off].join(',')); } catch (e) {}
+            location.reload();
+          });
+          badge.appendChild(button);
+        }
         document.body.appendChild(badge);
       }
       badge.hidden = location.pathname !== '/';
-      badge.textContent = `filter: ${STATS.feedResponses} pages, ${STATS.dropped} dropped | ` +
-        `hidden: ${document.querySelectorAll(`article[${MARK}]`).length} now, ${STATS.hidPosts} total | ` +
-        `shifts: ${STATS.shifts} (last ${STATS.lastShift}px) | ` +
-        `jumps: ${STATS.jumps} (last ${STATS.lastJump}px, ${STATS.jumpsAfterHide} after hide) | ` +
-        `shrinks: ${STATS.shrinks} | scrolls: ${STATS.scrolls} | ` +
-        `anchoring: ${CSS.supports('overflow-anchor', 'none') ? 'yes' : 'no'}`;
+      const { instaLitePages = 0, instaLiteDropped = 0 } = document.documentElement.dataset;
+      const line = `filter: ${instaLitePages} pages, ${instaLiteDropped} dropped | ` +
+        `hidden: ${document.querySelectorAll(`article[${MARK}]`).length} now, ${STATS.hidPosts} total`;
+      // Only touch the DOM on a change, or the badge would retrigger the observer forever.
+      if (text.textContent !== line) text.textContent = line;
     }, 500);
   }
 
@@ -300,8 +332,8 @@
     hideNavLinks();
     hideExploreGrid();
     hideMorePosts();
-    lockReelScrollers();
-    hideFeedPosts();
+    if (on('lock')) lockReelScrollers();
+    if (on('hide')) hideFeedPosts();
   }
 
   // Instagram is a single-page app that keeps rewriting the DOM, so rescan on
@@ -317,12 +349,14 @@
   }
 
   redirectBlockedPaths();
-  filterFeedRequests();
+  if (on('filter')) filterFeedRequests();
   injectStyle();
   if (CONFIG.showStats) showStats();
-  new MutationObserver(queueScan).observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-  });
-  window.addEventListener('popstate', queueScan);
+  if (on('scan')) {
+    new MutationObserver(queueScan).observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+    });
+    window.addEventListener('popstate', queueScan);
+  }
 })();
