@@ -21,14 +21,13 @@
     hideFeedReels: false,  // reels that show up as normal posts in the home feed
     lockReels: true,       // open single reels (e.g. from DMs) as a post, no swiping to more
     debug: false,          // outline matches in red instead of hiding them
+    showStats: true,       // badge on the home feed for diagnosing scroll jumps (temporary)
   };
 
   const MARK = 'data-insta-lite';
   const LOCK = 'data-insta-lite-lock';
   const FEED = 'data-insta-lite-feed';
-
-  // Counts shown in the debug badge. Phones have no console without a Mac.
-  const STATS = { requests: 0, feeds: 0, dropped: 0, hidden: 0 };
+  const STATS = { feedResponses: 0, dropped: 0, shifts: 0, lastShift: 0 };
 
   // Instagram's class names are obfuscated and change constantly, so everything
   // here keys off hrefs and visible text, which are far more stable.
@@ -71,7 +70,7 @@
       if (!feed || !Array.isArray(feed.edges)) return line;
       const before = feed.edges.length;
       feed.edges = feed.edges.filter(edge => keepFeedItem(edge.node));
-      STATS.feeds++;
+      STATS.feedResponses++;
       STATS.dropped += before - feed.edges.length;
       if (CONFIG.debug) console.log('[insta-lite] dropped', before - feed.edges.length, 'feed items');
       return JSON.stringify(json);
@@ -96,7 +95,6 @@
       if (!xhr.instaLiteGraphql || xhr.readyState !== 4 || typeof raw !== 'string') return raw;
       if (xhr.instaLiteRaw !== raw) {
         xhr.instaLiteRaw = raw;
-        STATS.requests++;
         try { xhr.instaLiteFiltered = filterFeedResponse(raw); } catch (e) { xhr.instaLiteFiltered = raw; }
       }
       return xhr.instaLiteFiltered;
@@ -137,7 +135,6 @@
   function hide(el, reason) {
     if (!el || el.hasAttribute(MARK)) return;
     el.setAttribute(MARK, reason);
-    STATS.hidden++;
     if (CONFIG.debug) console.log('[insta-lite] hid', reason, el);
   }
 
@@ -234,22 +231,39 @@
     }
   }
 
-  // Debug only: a corner badge showing whether the feed filter is working.
-  // "requests 0" means the script can't see Instagram's network requests (it
-  // runs outside the page), and "feeds 0" with requests means the feed loads
-  // through a request the filter doesn't recognize.
-  let badge;
-  function updateBadge() {
-    if (!CONFIG.debug || !document.body) return;
-    if (!badge) {
-      badge = document.createElement('div');
-      badge.style.cssText = 'position:fixed;left:4px;bottom:60px;z-index:2147483647;padding:2px 6px;'
-        + 'font:11px monospace;background:#c00;color:#fff;border-radius:4px;pointer-events:none';
-    }
-    if (!badge.isConnected) document.body.appendChild(badge);
-    const text = `requests ${STATS.requests} · feeds ${STATS.feeds} · dropped ${STATS.dropped} · hidden ${STATS.hidden}`;
-    // Only touch the DOM on a change, or the badge would retrigger the observer forever.
-    if (badge.textContent !== text) badge.textContent = text;
+  // Shows whether the feed data filter is running (it needs to run inside
+  // Instagram's own page) and counts layout shifts: times the post you're
+  // looking at moved because something above it changed size.
+  function showStats() {
+    let badge, anchor, anchorTop;
+    window.addEventListener('scroll', () => {
+      const mid = innerHeight / 2;
+      const post = [...document.querySelectorAll(`article:not([${MARK}])`)].find(a => {
+        const r = a.getBoundingClientRect();
+        return r.top <= mid && r.bottom >= mid;
+      });
+      const top = post && post.getBoundingClientRect().top + scrollY;
+      if (post && post === anchor && Math.abs(top - anchorTop) > 50) {
+        STATS.shifts++;
+        STATS.lastShift = Math.round(top - anchorTop);
+      }
+      anchor = post;
+      anchorTop = top;
+    }, { passive: true });
+    setInterval(() => {
+      if (!document.body) return;
+      if (!badge) {
+        badge = document.createElement('div');
+        badge.style.cssText = 'position:fixed;top:env(safe-area-inset-top);left:0;z-index:2147483647;' +
+          'pointer-events:none;background:rgba(0,0,0,.75);color:#fff;font:11px/1.3 monospace;padding:3px 5px;';
+        document.body.appendChild(badge);
+      }
+      badge.hidden = location.pathname !== '/';
+      badge.textContent = `filter: ${STATS.feedResponses} pages, ${STATS.dropped} dropped | ` +
+        `hidden: ${document.querySelectorAll(`article[${MARK}]`).length} | ` +
+        `shifts: ${STATS.shifts} (last ${STATS.lastShift}px) | ` +
+        `anchoring: ${CSS.supports('overflow-anchor', 'none') ? 'yes' : 'no'}`;
+    }, 500);
   }
 
   function scan() {
@@ -260,7 +274,6 @@
     hideMorePosts();
     lockReelScrollers();
     hideFeedPosts();
-    updateBadge();
   }
 
   // Instagram is a single-page app that keeps rewriting the DOM, so rescan on
@@ -278,6 +291,7 @@
   redirectBlockedPaths();
   filterFeedRequests();
   injectStyle();
+  if (CONFIG.showStats) showStats();
   new MutationObserver(queueScan).observe(document.documentElement, {
     childList: true,
     subtree: true,
