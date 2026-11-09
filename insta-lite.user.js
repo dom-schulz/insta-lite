@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Insta Lite
 // @namespace    insta-lite
-// @version      0.6.0
+// @version      0.6.1
 // @description  Strip Instagram down: no Reels, Explore, ads, or suggested posts.
 // @match        https://www.instagram.com/*
 // @run-at       document-start
@@ -26,6 +26,9 @@
   const MARK = 'data-insta-lite';
   const LOCK = 'data-insta-lite-lock';
   const FEED = 'data-insta-lite-feed';
+
+  // Counts shown in the debug badge. Phones have no console without a Mac.
+  const STATS = { requests: 0, feeds: 0, dropped: 0, hidden: 0 };
 
   // Instagram's class names are obfuscated and change constantly, so everything
   // here keys off hrefs and visible text, which are far more stable.
@@ -68,6 +71,8 @@
       if (!feed || !Array.isArray(feed.edges)) return line;
       const before = feed.edges.length;
       feed.edges = feed.edges.filter(edge => keepFeedItem(edge.node));
+      STATS.feeds++;
+      STATS.dropped += before - feed.edges.length;
       if (CONFIG.debug) console.log('[insta-lite] dropped', before - feed.edges.length, 'feed items');
       return JSON.stringify(json);
     }).join('\n');
@@ -91,6 +96,7 @@
       if (!xhr.instaLiteGraphql || xhr.readyState !== 4 || typeof raw !== 'string') return raw;
       if (xhr.instaLiteRaw !== raw) {
         xhr.instaLiteRaw = raw;
+        STATS.requests++;
         try { xhr.instaLiteFiltered = filterFeedResponse(raw); } catch (e) { xhr.instaLiteFiltered = raw; }
       }
       return xhr.instaLiteFiltered;
@@ -131,6 +137,7 @@
   function hide(el, reason) {
     if (!el || el.hasAttribute(MARK)) return;
     el.setAttribute(MARK, reason);
+    STATS.hidden++;
     if (CONFIG.debug) console.log('[insta-lite] hid', reason, el);
   }
 
@@ -227,6 +234,24 @@
     }
   }
 
+  // Debug only: a corner badge showing whether the feed filter is working.
+  // "requests 0" means the script can't see Instagram's network requests (it
+  // runs outside the page), and "feeds 0" with requests means the feed loads
+  // through a request the filter doesn't recognize.
+  let badge;
+  function updateBadge() {
+    if (!CONFIG.debug || !document.body) return;
+    if (!badge) {
+      badge = document.createElement('div');
+      badge.style.cssText = 'position:fixed;left:4px;bottom:60px;z-index:2147483647;padding:2px 6px;'
+        + 'font:11px monospace;background:#c00;color:#fff;border-radius:4px;pointer-events:none';
+    }
+    if (!badge.isConnected) document.body.appendChild(badge);
+    const text = `requests ${STATS.requests} · feeds ${STATS.feeds} · dropped ${STATS.dropped} · hidden ${STATS.hidden}`;
+    // Only touch the DOM on a change, or the badge would retrigger the observer forever.
+    if (badge.textContent !== text) badge.textContent = text;
+  }
+
   function scan() {
     document.documentElement.toggleAttribute(FEED, location.pathname === '/');
     redirectBlockedPaths();
@@ -235,6 +260,7 @@
     hideMorePosts();
     lockReelScrollers();
     hideFeedPosts();
+    updateBadge();
   }
 
   // Instagram is a single-page app that keeps rewriting the DOM, so rescan on
