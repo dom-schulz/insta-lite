@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Insta Lite
 // @namespace    insta-lite
-// @version      0.6.1
+// @version      0.6.2
 // @description  Strip Instagram down: no Reels, Explore, ads, or suggested posts.
 // @match        https://www.instagram.com/*
 // @run-at       document-start
@@ -27,7 +27,10 @@
   const MARK = 'data-insta-lite';
   const LOCK = 'data-insta-lite-lock';
   const FEED = 'data-insta-lite-feed';
-  const STATS = { feedResponses: 0, dropped: 0, shifts: 0, lastShift: 0 };
+  const STATS = {
+    feedResponses: 0, dropped: 0, hidPosts: 0, lastHide: 0,
+    shifts: 0, lastShift: 0, jumps: 0, lastJump: 0, jumpsAfterHide: 0, shrinks: 0, scrolls: 0,
+  };
 
   // Instagram's class names are obfuscated and change constantly, so everything
   // here keys off hrefs and visible text, which are far more stable.
@@ -135,6 +138,10 @@
   function hide(el, reason) {
     if (!el || el.hasAttribute(MARK)) return;
     el.setAttribute(MARK, reason);
+    if (el.tagName === 'ARTICLE') {
+      STATS.hidPosts++;
+      STATS.lastHide = performance.now();
+    }
     if (CONFIG.debug) console.log('[insta-lite] hid', reason, el);
   }
 
@@ -232,11 +239,30 @@
   }
 
   // Shows whether the feed data filter is running (it needs to run inside
-  // Instagram's own page) and counts layout shifts: times the post you're
-  // looking at moved because something above it changed size.
+  // Instagram's own page) and counts what could make the feed jump:
+  //   shifts: the post you're looking at moved because something above it
+  //     changed size
+  //   jumps: the scroll position reversed direction by a big step, and how
+  //     many of those came within half a second of the script hiding a post
+  //   shrinks: the page got shorter by more than 100px
+  //   scrolls: page scroll events; stuck at 0 means the feed scrolls inside
+  //     some other element and the counters above can't see it
   function showStats() {
-    let badge, anchor, anchorTop;
+    let badge, anchor, anchorTop, lastY = 0, lastDelta = 0, lastHeight = 0;
     window.addEventListener('scroll', () => {
+      STATS.scrolls++;
+      const delta = scrollY - lastY;
+      if (Math.abs(delta) > 150 && Math.sign(delta) === -Math.sign(lastDelta)) {
+        STATS.jumps++;
+        STATS.lastJump = Math.round(delta);
+        if (performance.now() - STATS.lastHide < 500) STATS.jumpsAfterHide++;
+      }
+      if (delta) lastDelta = delta;
+      lastY = scrollY;
+      const height = document.documentElement.scrollHeight;
+      if (height < lastHeight - 100) STATS.shrinks++;
+      lastHeight = height;
+
       const mid = innerHeight / 2;
       const post = [...document.querySelectorAll(`article:not([${MARK}])`)].find(a => {
         const r = a.getBoundingClientRect();
@@ -260,8 +286,10 @@
       }
       badge.hidden = location.pathname !== '/';
       badge.textContent = `filter: ${STATS.feedResponses} pages, ${STATS.dropped} dropped | ` +
-        `hidden: ${document.querySelectorAll(`article[${MARK}]`).length} | ` +
+        `hidden: ${document.querySelectorAll(`article[${MARK}]`).length} now, ${STATS.hidPosts} total | ` +
         `shifts: ${STATS.shifts} (last ${STATS.lastShift}px) | ` +
+        `jumps: ${STATS.jumps} (last ${STATS.lastJump}px, ${STATS.jumpsAfterHide} after hide) | ` +
+        `shrinks: ${STATS.shrinks} | scrolls: ${STATS.scrolls} | ` +
         `anchoring: ${CSS.supports('overflow-anchor', 'none') ? 'yes' : 'no'}`;
     }, 500);
   }
